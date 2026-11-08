@@ -58,3 +58,7 @@ uninstall.sh               uninstaller
 ```
 
 State lives in `~/.local/state/herdr-branch-tags/` (labels the script set, poll fingerprints, `.poll-heartbeat`).
+
+## License
+
+[MIT](LICENSE)
