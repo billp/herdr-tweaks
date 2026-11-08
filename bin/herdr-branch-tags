@@ -1,0 +1,148 @@
+#!/bin/bash
+# Sync herdr tab + pane labels with git branches.
+#   pane label = branch of the pane's cwd; panes outside a repo get
+#                "<agent> · <folder>" (e.g. "claude · ~/Projects")
+#   tab label  = the branch if all panes are on one branch, otherwise
+#                "N branches" (same repo / worktrees) or "N repos" (different repos),
+#                prefixed with "N bash" for panes outside a repo ("1 bash 1 branch")
+#   sidebar    = reports pane token $tile (pane label, else tab name) for
+#                [ui.sidebar.agents] rows in ~/.config/herdr/config.toml
+#   spaces     = reports workspace token $tab_name (summary across all tabs);
+#                `herdr-branch-tags --spaces` refreshes only that
+# Tab names are always automatic. Pane names you set by hand are kept: after
+# the first sync, a pane label is only overwritten if it still equals the
+# value this script last wrote.
+#
+# Usage: herdr-branch-tags [TAB_ID | --spaces]   (no arg = all tabs in all workspaces)
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-branch-tags"
+mkdir -p "$STATE"
+only_tab="$1"
+
+# report a sidebar token only when its value changed: report <pane|workspace> <id> <name> <value>
+report() {
+  local f="$STATE/.tok-${2//:/_}-$3"
+  [[ "$(cat "$f" 2>/dev/null)" == "$4" ]] && return
+  herdr "$1" report-metadata "$2" --source herdr-branch-tags --token "$3=$4" >/dev/null 2>&1 && printf '%s' "$4" >"$f"
+}
+ours() { cat "$STATE/${1//:/_}" 2>/dev/null; }
+mine() { printf '%s' "$2" >"$STATE/${1//:/_}"; }
+
+# prints "<git-common-dir>\t<branch>" for a directory, nothing if not a repo
+git_info() {
+  local out repo br
+  out=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir --abbrev-ref HEAD 2>/dev/null) || return
+  repo=${out%%$'\n'*}; br=${out##*$'\n'}
+  [[ "$br" == HEAD ]] && br=$(git -C "$1" rev-parse --short HEAD 2>/dev/null)
+  printf '%s\t%s' "$repo" "$br"
+}
+
+# name for a set of panes, from globals: nonrepo (count), branches[], repos[]
+#   all on one branch -> the branch; else "[N bash ][N branch(es)|N repos]"
+summarize() {
+  local nb=0 nr=0 gitpart
+  if (( ${#branches[@]} )); then
+    nb=$(printf '%s\n' "${branches[@]}" | sort -u | wc -l | tr -d ' ')
+    nr=$(printf '%s\n' "${repos[@]}" | sort -u | wc -l | tr -d ' ')
+  fi
+  (( nb == 1 )) && gitpart="1 branch" || gitpart="$nb branches"
+  (( nr > 1 )) && gitpart="$nr repos"
+  if (( nonrepo == 0 )); then
+    (( nb == 1 )) && echo "${branches[0]}" || echo "$gitpart"
+  elif (( nb == 0 )); then echo "$nonrepo bash"
+  else echo "$nonrepo bash $gitpart"; fi
+}
+
+# sidebar Space token $tab_name: summary of all panes across the workspace's
+# tabs, e.g. tabs "1 bash 2 branches" + "1 bash" -> "2 bash 2 branches"
+sync_spaces() {
+  local ws cwd info list=${1:-$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[].workspace_id')}
+  for ws in $list; do
+    branches=() repos=() nonrepo=0
+    while IFS= read -r cwd; do
+      info=$(git_info "$cwd")
+      if [[ -n "$info" ]]; then repos+=("${info%%$'\t'*}"); branches+=("${info#*$'\t'}")
+      else nonrepo=$((nonrepo + 1)); fi
+    done < <(herdr pane list --workspace "$ws" 2>/dev/null | jq -r '.result.panes[] | .foreground_cwd // .cwd')
+    name=$(summarize)
+    [[ -n "$name" ]] && report workspace "$ws" tab_name "$name"
+  done
+}
+if [[ "$only_tab" == --spaces ]]; then sync_spaces; exit 0; fi
+
+# --poll: run every second from herdr's tab bar (ui.tab_bar_right command entry).
+# Cheap no-op unless a pane's folder/branch/agent/label or a tab name changed in
+# the active workspace, so it also catches cd in shells without the zsh hook.
+fingerprint() {
+  local pid cwd rest
+  herdr tab list --workspace "$1" 2>/dev/null | jq -r '.result.tabs[] | [.tab_id, (.label // "")] | @tsv'
+  herdr pane list --workspace "$1" 2>/dev/null |
+    jq -r '.result.panes[] | [.pane_id, (.foreground_cwd // .cwd), (.agent // "") + "|" + (.label // "")] | @tsv' |
+    while IFS=$'\t' read -r pid cwd rest; do
+      printf '%s %s %s %s\n' "$pid" "$cwd" "$rest" "$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    done
+}
+poll_ws=""
+if [[ "$only_tab" == --poll ]]; then
+  poll_ws=${HERDR_WORKSPACE_ID:-$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[] | select(.focused) | .workspace_id')}
+  [[ -n "$poll_ws" ]] || exit 0
+  printf '%s %s\n' "$(date +%T)" "$poll_ws" >"$STATE/.poll-heartbeat"
+  fp_file="$STATE/.fp-$poll_ws"
+  [[ "$(fingerprint "$poll_ws")" == "$(cat "$fp_file" 2>/dev/null)" ]] && exit 0
+  only_tab=""
+  trap 'fingerprint "$poll_ws" >"$fp_file"' EXIT
+fi
+
+# herdr plugin event hooks: only re-sync the workspace the event happened in
+ev_ws=$(jq -r 'first(.. | objects | .workspace_id? // empty)' <<<"${HERDR_PLUGIN_EVENT_JSON:-}" 2>/dev/null)
+[[ -n "$poll_ws" ]] && ev_ws=$poll_ws
+if [[ -n "$only_tab" ]]; then wss=${only_tab%%:*}
+elif [[ -n "$ev_ws" ]]; then wss=$ev_ws
+else wss=$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[].workspace_id'); fi
+panes=$(for ws in $wss; do herdr pane list --workspace "$ws" 2>/dev/null | jq -c '.result.panes[]'; done)
+[[ -n "$panes" ]] || exit 0
+
+tabs=$(jq -r '.tab_id' <<<"$panes" | sort -u)
+[[ -n "$only_tab" ]] && tabs="$only_tab"
+
+for t in $tabs; do
+  branches=() repos=() nonrepo=0 pids=() plabels=()
+  while IFS=$'\x1f' read -r pid cwd agent label; do
+    info=$(git_info "$cwd")
+    repo=${info%%$'\t'*}; br=${info#*$'\t'}
+    if [[ -n "$info" ]]; then
+      want=$br; branches+=("$br"); repos+=("$repo")
+    else
+      nonrepo=$((nonrepo + 1))
+      # outside a repo: descriptive label, e.g. "claude · ~/Projects"
+      want="${agent:+$agent · }${cwd/#$HOME/~}"
+    fi
+
+    # first sight: claim repo panes, but only claim non-repo panes if unlabeled
+    if [[ -e "$STATE/${pid//:/_}" ]]; then prev=$(ours "$pid")
+    elif [[ -n "$info" ]]; then prev=$label; else prev=""; fi
+    # labels in our own folder format ("~/x", "/x", "claude · ~/x") are always ours
+    [[ "$label" =~ ^([a-z][a-z0-9_-]*\ ·\ )?[~/] ]] && prev=$label
+    if [[ "$label" != "$want" && "$label" == "$prev" ]]; then
+      herdr pane rename "$pid" "$want" >/dev/null 2>&1 && mine "$pid" "$want" && label=$want
+    fi
+    pids+=("$pid"); plabels+=("$label")
+  done < <(jq -r --arg t "$t" 'select(.tab_id==$t) | [.pane_id, (.foreground_cwd // .cwd), (.agent // ""), (.label // "")] | join("\u001f")' <<<"$panes")
+
+  want=$(summarize)
+
+  # tabs are always auto-named
+  cur=$(herdr tab get "$t" 2>/dev/null | jq -r '.result.tab.label // ""')
+  if [[ "$cur" != "$want" ]]; then
+    herdr tab rename "$t" "$want" >/dev/null 2>&1 && cur=$want
+  fi
+
+  # sidebar token $tile: pane label, falling back to the tab name
+  for i in "${!pids[@]}"; do
+    tile=${plabels[$i]:-$cur}
+    [[ -n "$tile" ]] && report pane "${pids[$i]}" tile "$tile"
+  done
+done
+
+sync_spaces "$wss"

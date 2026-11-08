@@ -1,0 +1,42 @@
+id = "local.branch-tags"
+name = "Branch tags"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Re-sync tab/pane branch labels and sidebar tokens (~/.local/bin/herdr-branch-tags) on pane/tab events"
+platforms = ["macos"]
+
+[[events]]
+on = "pane.created"
+command = ["/bin/sh", "-c", "exec \"$HOME/.local/bin/herdr-branch-tags\""]
+
+[[events]]
+on = "pane.closed"
+command = ["/bin/sh", "-c", "exec \"$HOME/.local/bin/herdr-branch-tags\""]
+
+[[events]]
+on = "pane.moved"
+command = ["/bin/sh", "-c", "exec \"$HOME/.local/bin/herdr-branch-tags\""]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["/bin/sh", "-c", "exec \"$HOME/.local/bin/herdr-branch-tags\""]
+
+[[events]]
+on = "tab.focused"
+command = ["/bin/sh", "-c", "exec \"$HOME/.local/bin/herdr-branch-tags\" --spaces"]
+
+[[events]]
+on = "tab.renamed"
+command = ["/bin/sh", "-c", "exec \"$HOME/.local/bin/herdr-branch-tags\""]
+
+[[events]]
+on = "tab.created"
+command = ["/bin/sh", "-c", "exec \"$HOME/.local/bin/herdr-branch-tags\" --spaces"]
+
+[[events]]
+on = "tab.closed"
+command = ["/bin/sh", "-c", "exec \"$HOME/.local/bin/herdr-branch-tags\" --spaces"]
+
+[[events]]
+on = "workspace.created"
+command = ["/bin/sh", "-c", "exec \"$HOME/.local/bin/herdr-branch-tags\" --spaces"]

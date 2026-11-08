@@ -1,0 +1,18 @@
+# >>> herdr-tweaks >>>
+[ui]
+# Invisible poller (prints nothing): re-tags tabs/tiles every second when a
+# pane's folder or branch changes — works in any shell, no zsh hook needed.
+tab_bar_right = [
+  { type = "command", command = "~/.local/bin/herdr-branch-tags --poll", interval_seconds = 1, timeout_seconds = 10 },
+]
+
+# Agent rows: show the tile (pane) name, falling back to the tab name.
+# $tile is reported by herdr-branch-tags.
+[ui.sidebar.agents]
+rows = [["state_icon", "machine", "workspace", "$tile"], ["agent"]]
+
+# Space rows: under the workspace name, a summary of all its tabs.
+# $tab_name is reported by herdr-branch-tags.
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace"], ["$tab_name"]]
+# <<< herdr-tweaks <<<
